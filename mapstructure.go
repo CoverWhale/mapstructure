@@ -187,7 +187,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-viper/mapstructure/v2/internal/errors"
+	"github.com/CoverWhale/mapstructure/v2/internal/errors"
 )
 
 // DecodeHookFunc is the callback function that can be used for
