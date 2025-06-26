@@ -255,6 +255,21 @@ type StructWithOmitEmpty struct {
 	OmitNestedField    *Nested                `mapstructure:"omittable-nested,omitempty"`
 }
 
+type StructWithOmitZero struct {
+	VisibleStringField string                 `mapstructure:"visible-string"`
+	OmitStringField    string                 `mapstructure:"omittable-string,omitzero"`
+	VisibleIntField    int                    `mapstructure:"visible-int"`
+	OmitIntField       int                    `mapstructure:"omittable-int,omitzero"`
+	VisibleFloatField  float64                `mapstructure:"visible-float"`
+	OmitFloatField     float64                `mapstructure:"omittable-float,omitzero"`
+	VisibleSliceField  []interface{}          `mapstructure:"visible-slice"`
+	OmitSliceField     []interface{}          `mapstructure:"omittable-slice,omitzero"`
+	VisibleMapField    map[string]interface{} `mapstructure:"visible-map"`
+	OmitMapField       map[string]interface{} `mapstructure:"omittable-map,omitzero"`
+	NestedField        *Nested                `mapstructure:"visible-nested"`
+	OmitNestedField    *Nested                `mapstructure:"omittable-nested,omitzero"`
+}
+
 type TypeConversionResult struct {
 	IntToFloat         float32
 	IntToUint          uint
@@ -864,6 +879,29 @@ func TestDecode_EmbeddedPointerSquash_FromMapToStruct(t *testing.T) {
 	result := EmbeddedPointerSquash{
 		Basic: &Basic{},
 	}
+	err := Decode(input, &result)
+	if err != nil {
+		t.Fatalf("got an err: %s", err.Error())
+	}
+
+	if result.Vstring != "foo" {
+		t.Errorf("vstring value should be 'foo': %#v", result.Vstring)
+	}
+
+	if result.Vunique != "bar" {
+		t.Errorf("vunique value should be 'bar': %#v", result.Vunique)
+	}
+}
+
+func TestDecode_EmbeddedPointerSquash_WithoutPreInitializedStructs_FromMapToStruct(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]interface{}{
+		"Vstring": "foo",
+		"Vunique": "bar",
+	}
+
+	result := EmbeddedPointerSquash{}
 	err := Decode(input, &result)
 	if err != nil {
 		t.Fatalf("got an err: %s", err.Error())
@@ -1672,6 +1710,32 @@ func TestDecoder_ErrorUnset(t *testing.T) {
 	err = decoder.Decode(input)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestDecoder_ErrorUnset_AllowUnsetPointer(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]interface{}{
+		"vstring": "hello",
+		"foo":     "bar",
+	}
+
+	var result BasicPointer
+	config := &DecoderConfig{
+		ErrorUnset:        true,
+		AllowUnsetPointer: true,
+		Result:            &result,
+	}
+
+	decoder, err := NewDecoder(config)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	err = decoder.Decode(input)
+	if err != nil {
+		t.Fatal("error not expected")
 	}
 }
 
@@ -2589,8 +2653,11 @@ func TestInvalidType(t *testing.T) {
 
 	errs := derr.Unwrap()
 
-	if errs[0].Error() != "'Vstring' expected type 'string', got unconvertible type 'int', value: '42'" {
+	var decoderErr *DecodeError
+	if !errors.As(errs[0], &decoderErr) {
 		t.Errorf("got unexpected error: %s", err)
+	} else if errors.Is(decoderErr.Unwrap(), &UnconvertibleTypeError{}) {
+		t.Errorf("error should be UnconvertibleTypeError, got: %s", decoderErr.Unwrap())
 	}
 
 	inputNegIntUint := map[string]interface{}{
@@ -2608,8 +2675,10 @@ func TestInvalidType(t *testing.T) {
 
 	errs = derr.Unwrap()
 
-	if errs[0].Error() != "cannot parse 'Vuint', -42 overflows uint" {
+	if !errors.As(errs[0], &decoderErr) {
 		t.Errorf("got unexpected error: %s", err)
+	} else if errors.Is(decoderErr.Unwrap(), &ParseError{}) {
+		t.Errorf("error should be ParseError, got: %s", decoderErr.Unwrap())
 	}
 
 	inputNegFloatUint := map[string]interface{}{
@@ -2627,7 +2696,7 @@ func TestInvalidType(t *testing.T) {
 
 	errs = derr.Unwrap()
 
-	if errs[0].Error() != "cannot parse 'Vuint', -42.000000 overflows uint" {
+	if !errors.As(errs[0], &decoderErr) {
 		t.Errorf("got unexpected error: %s", err)
 	}
 }
@@ -2922,6 +2991,88 @@ func TestDecode_StructTaggedWithOmitempty_KeepNonEmptyValues(t *testing.T) {
 		"omittable-map":    map[string]interface{}{"k": "v"},
 		"visible-nested":   emptyNested,
 		"omittable-nested": &Nested{},
+	}
+
+	actual := &map[string]interface{}{}
+	Decode(input, actual)
+
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("Decode() expected: %#v, got: %#v", expected, actual)
+	}
+}
+
+func TestDecode_StructTaggedWithOmitzero_KeepNonZeroValues(t *testing.T) {
+	t.Parallel()
+
+	input := &StructWithOmitZero{
+		VisibleStringField: "",
+		OmitStringField:    "string",
+		VisibleIntField:    0,
+		OmitIntField:       1,
+		VisibleFloatField:  0.0,
+		OmitFloatField:     1.0,
+		VisibleSliceField:  nil,
+		OmitSliceField:     []interface{}{},
+		VisibleMapField:    nil,
+		OmitMapField:       map[string]interface{}{},
+		NestedField:        nil,
+		OmitNestedField:    &Nested{},
+	}
+
+	var emptySlice []interface{}
+	var emptyMap map[string]interface{}
+	var emptyNested *Nested
+	expected := &map[string]interface{}{
+		"visible-string":   "",
+		"omittable-string": "string",
+		"visible-int":      0,
+		"omittable-int":    1,
+		"visible-float":    0.0,
+		"omittable-float":  1.0,
+		"visible-slice":    emptySlice,
+		"omittable-slice":  []interface{}{},
+		"visible-map":      emptyMap,
+		"omittable-map":    map[string]interface{}{},
+		"visible-nested":   emptyNested,
+		"omittable-nested": &Nested{},
+	}
+
+	actual := &map[string]interface{}{}
+	Decode(input, actual)
+
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("Decode() expected: %#v, got: %#v", expected, actual)
+	}
+}
+
+func TestDecode_StructTaggedWithOmitzero_DropZeroValues(t *testing.T) {
+	t.Parallel()
+
+	input := &StructWithOmitZero{
+		VisibleStringField: "",
+		OmitStringField:    "",
+		VisibleIntField:    0,
+		OmitIntField:       0,
+		VisibleFloatField:  0.0,
+		OmitFloatField:     0.0,
+		VisibleSliceField:  nil,
+		OmitSliceField:     nil,
+		VisibleMapField:    nil,
+		OmitMapField:       nil,
+		NestedField:        nil,
+		OmitNestedField:    nil,
+	}
+
+	var emptySlice []interface{}
+	var emptyMap map[string]interface{}
+	var emptyNested *Nested
+	expected := &map[string]interface{}{
+		"visible-string": "",
+		"visible-int":    0,
+		"visible-float":  0.0,
+		"visible-slice":  emptySlice,
+		"visible-map":    emptyMap,
+		"visible-nested": emptyNested,
 	}
 
 	actual := &map[string]interface{}{}
